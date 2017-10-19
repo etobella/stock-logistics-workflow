@@ -1,26 +1,44 @@
 # -*- coding: utf-8 -*-
 # Copyright 2017 Pedro M. Baeza <pedro.baeza@tecnativa.com>
-# License AGPL-3.0 or later (http://www.gnu.org/licenses/agpl).
+# License AGPL-3.0 or later (https://www.gnuorg/licenses/agpl).
 
-from odoo import models
+from odoo import api, models, _
+from odoo.exceptions import UserError
 
 
 class StockPicking(models.Model):
     _inherit = 'stock.picking'
 
-    def _prepare_pack_ops(self, quants, forced_qties):
-        """Auto-assign as done the quantity proposed for the lots"""
+    @api.multi
+    def button_validate(self):
         self.ensure_one()
-        res = super(StockPicking, self)._prepare_pack_ops(
-            quants, forced_qties,
-        )
-        if self.picking_type_id.avoid_internal_assignment:
-            return res
-        for pack_op_vals in res:
-            qty_done = 0
-            for pack_lot_vals in pack_op_vals.get('pack_lot_ids', []):
-                pack_lot_vals[2]['qty'] = pack_lot_vals[2]['qty_todo']
-                qty_done += pack_lot_vals[2]['qty_todo']
-            if qty_done:
-                pack_op_vals['qty_done'] = qty_done
-        return res
+        if not self.move_lines and not self.move_line_ids:
+            raise UserError(_('Please add some lines to move'))
+
+        # If no lots when needed, raise error
+        picking_type = self.picking_type_id
+        no_quantities_done = all(
+            line.qty_done == 0.0 for line in self.move_line_ids)
+        no_initial_demand = all(
+            move.product_uom_qty == 0.0 for move in self.move_lines)
+        if (
+            no_quantities_done and
+            not picking_type.avoid_internal_assignment and
+            not no_initial_demand
+        ):
+            view = self.env.ref('stock.view_immediate_transfer')
+            wiz = self.env['stock.immediate.transfer'].create(
+                {'pick_ids': [(4, self.id)]})
+            return {
+                'name': _('Immediate Transfer?'),
+                'type': 'ir.actions.act_window',
+                'view_type': 'form',
+                'view_mode': 'form',
+                'res_model': 'stock.immediate.transfer',
+                'views': [(view.id, 'form')],
+                'view_id': view.id,
+                'target': 'new',
+                'res_id': wiz.id,
+                'context': self.env.context,
+            }
+        return super(StockPicking, self).button_validate()
